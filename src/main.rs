@@ -30,10 +30,10 @@ async fn kafka_to_sync(topic: &str, filename: &str, duration: u64) -> Result<(),
     };
     let start_time = Instant::now();
     let mut partiton_offset_hs: HashMap<i32, i64> = HashMap::new();
-    let mut consumer = match Consumer::from_hosts(vec!("localhost:9092".to_owned()))
+    let mut consumer = match Consumer::from_hosts(vec!(env::var("KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".to_string()).to_owned()))
                 .with_topic(topic.to_owned())
                 .with_fallback_offset(FetchOffset::Earliest)
-                .with_group("hyper-c1".to_owned())
+                .with_group(env::var("KAFKA_CONSUMER_GROUP").unwrap_or_else(|_| "kafka-sync".to_string()).to_owned())
                 .with_offset_storage(GroupOffsetStorage::Kafka)
                 .create() {
                     Ok(consumer) => consumer,
