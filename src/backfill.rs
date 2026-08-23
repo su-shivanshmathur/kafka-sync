@@ -128,10 +128,10 @@ async fn sync_window(
             store.put_object(&key, Bytes::from(batch.payload)).await?;
             info!(
                 topic,
-                key = key.as_str(),
+                key = %key,
                 bytes,
                 message_count,
-                partitions = partition_fragment(&batch.partition_offsets).as_str(),
+                partitions = %partition_fragment(&batch.partition_offsets),
                 "window uploaded to object storage"
             );
             consumer.commit_offsets(&batch.partition_offsets).await?;

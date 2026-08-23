@@ -16,15 +16,12 @@ use tracing::info;
 
 use crate::backfill::Backfill;
 use crate::config::Config;
-use crate::storage::s3::S3Store;
-use crate::storage::ObjectStore;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::from_env().context("invalid configuration")?;
     telemetry::init().context("failed to initialize telemetry")?;
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(S3Store::connect(config.cloud_bucket.clone(), config.aws_region.clone()).await);
+    let store = storage::from_config(&config).await;
     let shutdown = install_shutdown_handler().context("failed to install the Ctrl-C handler")?;
     info!(step = "Server Start", value = "ok", "kafka-sync started");
     Backfill::new(Arc::new(config), store).run(shutdown).await;
