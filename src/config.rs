@@ -10,9 +10,6 @@ use std::time::Duration;
 use crate::error::ConfigError;
 
 const ENV_ENVIRONMENT: &str = "ENVIRONMENT";
-/// Deprecated spelling kept for backwards compatibility with existing
-/// deployments. [`ENV_ENVIRONMENT`] takes precedence.
-const ENV_ENVIRONMENT_LEGACY: &str = "ENVIORNMENT";
 const ENV_BROKERS: &str = "KAFKA_BROKERS";
 const ENV_TOPICS: &str = "KAFKA_TOPICS";
 const ENV_CONSUMER_GROUP: &str = "KAFKA_CONSUMER_GROUP";
@@ -55,26 +52,27 @@ impl Config {
     /// Loads the configuration from the process environment.
     ///
     /// A `.env` file is consulted first when the environment is `local`
-    /// (or unset, mirroring the historical default); `dotenv` never
-    /// overwrites variables already present in the process environment.
+    /// (the default when `ENVIRONMENT` is unset); `dotenv` never overwrites
+    /// variables already present in the process environment.
     pub fn from_env() -> Result<Self, ConfigError> {
-        let preloaded = std::env::var(ENV_ENVIRONMENT)
-            .ok()
-            .or_else(|| std::env::var(ENV_ENVIRONMENT_LEGACY).ok())
+        // Use the same blank-is-missing normalization as the rest of the
+        // parsing, so `ENVIRONMENT=" "` doesn't silently suppress `.env`
+        // loading while later being treated as "local".
+        let env_lookup = |name: &str| std::env::var(name).ok();
+        let preloaded = optional(&env_lookup, ENV_ENVIRONMENT)
             .unwrap_or_else(|| DEFAULT_ENVIRONMENT.to_owned());
         if preloaded == LOCAL_ENVIRONMENT {
             drop(dotenv::dotenv());
         }
-        Self::from_lookup(|name| std::env::var(name).ok())
+        Self::from_lookup(env_lookup)
     }
 
     /// Builds a [`Config`] from arbitrary key/value pairs. This is the pure
     /// core of [`Config::from_env`] and never touches the process
     /// environment, which keeps the validation rules fully testable.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
-        let environment = optional(&lookup, ENV_ENVIRONMENT)
-            .or_else(|| optional(&lookup, ENV_ENVIRONMENT_LEGACY))
-            .unwrap_or_else(|| DEFAULT_ENVIRONMENT.to_owned());
+        let environment =
+            optional(&lookup, ENV_ENVIRONMENT).unwrap_or_else(|| DEFAULT_ENVIRONMENT.to_owned());
 
         let kafka_brokers = parse_list(&required_or(&lookup, ENV_BROKERS, DEFAULT_BROKERS));
         let kafka_topics = parse_list(&env_or_empty(&lookup, ENV_TOPICS));

@@ -1,10 +1,10 @@
 //! Kafka ingestion built on `rdkafka`'s async [`StreamConsumer`].
 //!
-//! Unlike the previous synchronous `kafka` crate, `rdkafka` drives its I/O on
-//! librdkafka's own background threads and integrates with Tokio through
-//! wakeups, so the executor is never blocked. The only call that can park on
-//! the network is the broker-acknowledged offset commit, which is therefore
-//! wrapped in [`tokio::task::spawn_blocking`].
+//! `rdkafka` drives its I/O on librdkafka's own background threads and
+//! integrates with Tokio through wakeups, so the executor is never blocked.
+//! The only call that can park on the network is the broker-acknowledged
+//! offset commit, which is therefore wrapped in
+//! [`tokio::task::spawn_blocking`].
 //!
 //! Delivery semantics are at-least-once: auto-commit is disabled and offsets
 //! are committed explicitly by the orchestrator *after* a successful upload.
@@ -43,8 +43,7 @@ pub struct ConsumedBatch {
 ///
 /// A fresh consumer is created per window: group membership, rebalances, and
 /// recovery from broker failures are then entirely librdkafka's problem,
-/// which matches the previous architecture while remaining crash-safe
-/// (uncommitted offsets are simply re-consumed).
+/// while remaining crash-safe (uncommitted offsets are simply re-consumed).
 pub struct KafkaConsumer {
     topic: String,
     consumer: Arc<StreamConsumer>,
@@ -63,7 +62,7 @@ impl KafkaConsumer {
             // Offsets are committed explicitly after a successful upload.
             .set("enable.auto.commit", "false")
             .set("enable.auto.offset.store", "false")
-            // Mirrors the previous FetchOffset::Earliest semantics.
+            // Start from the beginning when no committed offset exists.
             .set("auto.offset.reset", "earliest")
             .create()
             .map_err(|source| KafkaError::Create {

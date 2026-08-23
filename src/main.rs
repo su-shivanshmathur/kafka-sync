@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Wires SIGINT/SIGTERM to a [`Notify`] the main loop can `await`, giving
-/// the process a graceful shutdown path instead of the previous hard kill.
+/// the process a graceful shutdown path.
 fn install_shutdown_handler() -> Result<Arc<Notify>, ctrlc::Error> {
     let shutdown = Arc::new(Notify::new());
     let notifier = Arc::clone(&shutdown);

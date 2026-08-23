@@ -55,7 +55,10 @@ impl Backfill {
             tokio::select! {
                 biased;
                 _ = shutdown.notified() => {
-                    info!("shutdown signal received; stopping after the current window tasks settle");
+                    info!(
+                        "shutdown signal received; aborting in-flight window tasks \
+                         (nothing was committed, so those windows are re-consumed on the next run)"
+                    );
                     active = false;
                 }
                 () = self.run_window(window_start) => {
@@ -158,7 +161,7 @@ fn object_key(
 }
 
 /// `BTreeMap` iteration order (ascending partition) makes this fragment
-/// deterministic — unlike the previous `HashMap`-based key.
+/// deterministic regardless of insertion order.
 fn partition_fragment(partition_offsets: &BTreeMap<i32, i64>) -> String {
     partition_offsets
         .iter()
