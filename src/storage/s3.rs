@@ -1,0 +1,64 @@
+//! S3 implementation of [`ObjectStore`] on the official AWS SDK for Rust.
+//!
+//! The [`aws_sdk_s3::Client`] is constructed exactly once at startup and
+//! shared immutably for the whole process lifetime — no credentials or HTTP
+//! client per upload (the SDK client is already backed by shared
+//! connectors).
+
+use async_trait::async_trait;
+use aws_config::BehaviorVersion;
+use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::Client;
+use bytes::Bytes;
+
+use crate::error::StorageError;
+use crate::storage::ObjectStore;
+
+/// S3-backed object store with a process-lifetime SDK client.
+pub struct S3Store {
+    client: Client,
+    bucket: String,
+}
+
+impl S3Store {
+    /// Builds the shared client from the default AWS config chain
+    /// (env → profile → SSO → IMDS/ECS) with the configured region.
+    ///
+    /// Credentials resolve lazily on the first request, so construction is
+    /// infallible; misconfiguration surfaces as a [`StorageError`] on the
+    /// first upload instead of a startup panic.
+    pub async fn connect(bucket: impl Into<String>, region: impl Into<String>) -> Self {
+        let shared = aws_config::defaults(BehaviorVersion::latest())
+            .region(aws_sdk_s3::config::Region::new(region.into()))
+            .load()
+            .await;
+        Self {
+            client: Client::new(&shared),
+            bucket: bucket.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl ObjectStore for S3Store {
+    async fn put_object(&self, key: &str, body: Bytes) -> Result<(), StorageError> {
+        let size = body.len();
+        let sent = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(ByteStream::from(body))
+            .send()
+            .await;
+        match sent {
+            Ok(_) => Ok(()),
+            Err(err) => Err(StorageError::PutObject {
+                bucket: self.bucket.clone(),
+                key: key.to_owned(),
+                size,
+                source: Box::new(err),
+            }),
+        }
+    }
+}

@@ -1,0 +1,9 @@
+# Keep the Docker build context small and reproducible
+target
+.git
+.gitignore
+
+# Local secrets are loaded at runtime, never baked into the image
+.env
+.env.*
+!.env.example
