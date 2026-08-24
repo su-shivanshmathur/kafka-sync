@@ -67,6 +67,13 @@ pub enum KafkaError {
         #[source]
         source: rdkafka::error::KafkaError,
     },
+    /// The current partition assignment could not be read before committing.
+    #[error("failed to read the partition assignment for topic {topic:?}")]
+    Assignment {
+        topic: String,
+        #[source]
+        source: rdkafka::error::KafkaError,
+    },
     /// The blocking offset-commit task did not complete normally.
     #[error("blocking commit task for topic {topic:?} failed to join")]
     Join {

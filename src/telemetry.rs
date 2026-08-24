@@ -19,7 +19,13 @@ use crate::error::TelemetryError;
 pub fn init() -> Result<(), TelemetryError> {
     let filter = match EnvFilter::try_from_default_env() {
         Ok(from_env) => from_env,
-        Err(_) => EnvFilter::try_new("info")?,
+        Err(invalid) => {
+            // The subscriber isn't installed yet, so this can't go through
+            // `tracing`; surface the misconfiguration on stderr instead of
+            // silently changing log behavior.
+            eprintln!("kafka-sync: invalid RUST_LOG directive ({invalid}); falling back to `info`");
+            EnvFilter::try_new("info")?
+        }
     };
     let json = fmt::layer()
         .json()

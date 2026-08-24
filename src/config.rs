@@ -14,6 +14,7 @@ const ENV_BROKERS: &str = "KAFKA_BROKERS";
 const ENV_TOPICS: &str = "KAFKA_TOPICS";
 const ENV_CONSUMER_GROUP: &str = "KAFKA_CONSUMER_GROUP";
 const ENV_SYNC_DURATION: &str = "SYNC_DURATION";
+const ENV_MAX_WINDOW_BYTES: &str = "KAFKA_MAX_WINDOW_BYTES";
 const ENV_OBJECT_STORAGE: &str = "OBJECT_STORAGE";
 const ENV_BUCKET: &str = "CLOUD_BUCKET";
 const ENV_AWS_REGION: &str = "AWS_REGION";
@@ -22,6 +23,8 @@ const DEFAULT_ENVIRONMENT: &str = "local";
 const DEFAULT_BROKERS: &str = "localhost:9092";
 const DEFAULT_CONSUMER_GROUP: &str = "kafka-sync";
 const DEFAULT_SYNC_DURATION_SECS: u64 = 10;
+/// Bounds the in-memory payload buffer of one topic window (256 MiB).
+const DEFAULT_MAX_WINDOW_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_OBJECT_STORAGE: &str = "AWS";
 const DEFAULT_BUCKET: &str = "eu-kafka-backfill-bucket";
 const DEFAULT_AWS_REGION: &str = "eu-central-1";
@@ -43,6 +46,8 @@ pub struct Config {
     pub kafka_topics: Vec<String>,
     pub kafka_consumer_group: String,
     pub sync_duration: Duration,
+    /// Upper bound on the in-memory payload buffer of a single topic window.
+    pub max_window_bytes: usize,
     pub storage_provider: StorageProvider,
     pub cloud_bucket: String,
     pub aws_region: String,
@@ -62,7 +67,7 @@ impl Config {
         let preloaded = optional(&env_lookup, ENV_ENVIRONMENT)
             .unwrap_or_else(|| DEFAULT_ENVIRONMENT.to_owned());
         if preloaded == LOCAL_ENVIRONMENT {
-            drop(dotenv::dotenv());
+            drop(dotenvy::dotenv());
         }
         Self::from_lookup(env_lookup)
     }
@@ -89,6 +94,12 @@ impl Config {
         };
         let sync_duration = parse_duration_secs(ENV_SYNC_DURATION, &raw_duration)?;
 
+        let raw_max_bytes = match optional(&lookup, ENV_MAX_WINDOW_BYTES) {
+            Some(value) => value,
+            None => DEFAULT_MAX_WINDOW_BYTES.to_string(),
+        };
+        let max_window_bytes = parse_positive_usize(ENV_MAX_WINDOW_BYTES, &raw_max_bytes)?;
+
         let raw_provider = required_or(&lookup, ENV_OBJECT_STORAGE, DEFAULT_OBJECT_STORAGE);
         let storage_provider = parse_storage_provider(&raw_provider)?;
 
@@ -101,6 +112,7 @@ impl Config {
             kafka_topics,
             kafka_consumer_group,
             sync_duration,
+            max_window_bytes,
             storage_provider,
             cloud_bucket,
             aws_region,
@@ -135,6 +147,23 @@ fn parse_list(raw: &str) -> Vec<String> {
         .filter(|entry| !entry.is_empty())
         .map(String::from)
         .collect()
+}
+
+fn parse_positive_usize(name: &'static str, raw: &str) -> Result<usize, ConfigError> {
+    raw.parse::<usize>()
+        .map_err(|_| ConfigError::InvalidValue {
+            name,
+            value: raw.to_owned(),
+            reason: "expected a positive integer",
+        })
+        .and_then(|value| match value {
+            0 => Err(ConfigError::InvalidValue {
+                name,
+                value: raw.to_owned(),
+                reason: "value must be at least 1",
+            }),
+            valid => Ok(valid),
+        })
 }
 
 fn parse_duration_secs(name: &'static str, raw: &str) -> Result<Duration, ConfigError> {
