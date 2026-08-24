@@ -3,6 +3,7 @@
 
 mod backfill;
 mod config;
+mod consts;
 mod error;
 mod kafka;
 mod storage;

@@ -23,6 +23,20 @@ pub enum ConfigError {
         value: String,
         reason: &'static str,
     },
+    /// An existing configuration file could not be read.
+    #[error("configuration file {path} could not be read")]
+    FileUnreadable {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    /// An existing configuration file is not valid TOML.
+    #[error("configuration file {path} is not valid TOML")]
+    FileUnparseable {
+        path: String,
+        #[source]
+        source: toml::de::Error,
+    },
 }
 
 /// Failures while installing the logging/telemetry pipeline.

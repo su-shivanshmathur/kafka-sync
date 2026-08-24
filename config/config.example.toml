@@ -1,0 +1,38 @@
+# kafka-sync — configuration reference
+#
+# This file enumerates every configuration option. Copy it to
+# `config/development.toml` (or `config/<RUN_ENV>.toml` for another
+# environment) and adjust the values to the target infrastructure.
+# NEVER commit secrets here — the file may only hold non-secret defaults.
+#
+# Equivalent environment variables always win over file values:
+#
+#   RUN_ENV                  selects config/<RUN_ENV>.toml   (default "development")
+#   KAFKA_BROKERS            [kafka] brokers
+#   KAFKA_TOPICS             [kafka] topics
+#   KAFKA_CONSUMER_GROUP     [kafka] consumer_group
+#   SYNC_DURATION            [kafka] sync_duration_secs      (seconds, >= 1)
+#   KAFKA_MAX_WINDOW_BYTES   [kafka] max_window_bytes        (bytes, >= 1)
+#   OBJECT_STORAGE           [storage] provider              (only "AWS" today)
+#   CLOUD_BUCKET             [storage] bucket
+#   AWS_REGION               [storage] region
+
+[kafka]
+# Comma-separated host:port bootstrap servers. REQUIRED (no default).
+brokers = "localhost:9092"
+# Consumer group name — determines offset continuity. REQUIRED (no default).
+consumer_group = "kafka-sync-dev"
+# Comma-separated topic list. REQUIRED (no default).
+topics = "events"
+# Window length in seconds. Default: 10.
+sync_duration_secs = 10
+# Per-topic in-memory buffer cap for one window, in bytes. Default: 268435456.
+max_window_bytes = 268435456
+
+[storage]
+# Object storage provider (only "AWS" today). Default: "AWS".
+provider = "AWS"
+# Target bucket. REQUIRED (no default).
+bucket = "kafka-sync-dev-bucket"
+# Region used to build the SDK client. REQUIRED (no default).
+region = "eu-west-1"

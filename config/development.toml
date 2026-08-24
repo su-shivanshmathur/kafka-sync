@@ -1,0 +1,20 @@
+# kafka-sync — development configuration
+#
+# Loaded when `RUN_ENV` is unset or `development`. Resolution order
+# (highest wins): process environment variables (and `.env`) > this file >
+# built-in defaults. Environment-specific overrides belong under
+# `config/deployments/`.
+
+[kafka]
+brokers = "localhost:9093"
+consumer_group = "kafka-sync-dev"
+topics = "events"
+# Window length in seconds.
+sync_duration_secs = 10
+# Per-topic in-memory buffer cap for one window (256 MiB).
+max_window_bytes = 268435456
+
+[storage]
+provider = "AWS"
+bucket = "kafka-sync-dev-bucket"
+region = "eu-west-1"
