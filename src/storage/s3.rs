@@ -18,6 +18,10 @@ use crate::storage::ObjectStore;
 pub struct S3Store {
     client: Client,
     bucket: String,
+    /// Required key prefix, normalized to have no leading/trailing `/`.
+    prefix: String,
+    /// Precomputed `s3://<bucket>/<prefix>` for cheap error context.
+    location: String,
 }
 
 impl S3Store {
@@ -27,14 +31,25 @@ impl S3Store {
     /// Credentials resolve lazily on the first request, so construction is
     /// infallible; misconfiguration surfaces as a [`StorageError`] on the
     /// first upload instead of a startup panic.
-    pub async fn connect(bucket: impl Into<String>, region: impl Into<String>) -> Self {
+    pub async fn connect(
+        bucket: impl Into<String>,
+        path: impl Into<String>,
+        region: impl Into<String>,
+    ) -> Self {
         let shared = aws_config::defaults(BehaviorVersion::latest())
             .region(aws_sdk_s3::config::Region::new(region.into()))
             .load()
             .await;
+        let bucket = bucket.into();
+        // `path` is validated non-blank at config time, so the normalized
+        // prefix is always present.
+        let prefix = path.into().trim_matches('/').to_owned();
+        let location = format!("s3://{bucket}/{prefix}");
         Self {
             client: Client::new(&shared),
-            bucket: bucket.into(),
+            bucket,
+            prefix,
+            location,
         }
     }
 }
@@ -43,19 +58,22 @@ impl S3Store {
 impl ObjectStore for S3Store {
     async fn put_object(&self, key: &str, body: Bytes) -> Result<(), StorageError> {
         let size = body.len();
+        // The backend owns its own addressing: the required prefix is
+        // prepended here, keeping `backfill::object_key` backend-agnostic.
+        let full_key = format!("{}/{}", self.prefix, key);
         let sent = self
             .client
             .put_object()
             .bucket(&self.bucket)
-            .key(key)
+            .key(&full_key)
             .body(ByteStream::from(body))
             .send()
             .await;
         match sent {
             Ok(_) => Ok(()),
             Err(err) => Err(StorageError::PutObject {
-                bucket: self.bucket.clone(),
-                key: key.to_owned(),
+                location: self.location.clone(),
+                key: full_key,
                 size,
                 source: Box::new(err),
             }),

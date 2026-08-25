@@ -13,11 +13,12 @@ use thiserror::Error;
 /// Failures while loading or validating the process configuration.
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    /// A required environment variable is unset or empty.
-    #[error("environment variable {name} must be set to a non-empty value")]
+    /// A required configuration value is unset or empty (checked both as
+    /// an environment variable and in the config file).
+    #[error("configuration value {name} must be set to a non-empty value")]
     Missing { name: &'static str },
-    /// An environment variable holds a value that failed validation.
-    #[error("environment variable {name} has invalid value {value:?}: {reason}")]
+    /// A configuration value failed validation.
+    #[error("configuration value {name} has invalid value {value:?}: {reason}")]
     InvalidValue {
         name: &'static str,
         value: String,
@@ -100,10 +101,24 @@ pub enum KafkaError {
 /// Failures reported by the object-storage layer.
 #[derive(Debug, Error)]
 pub enum StorageError {
-    /// Uploading an object to the bucket failed.
-    #[error("failed to put object s3://{bucket}/{key} ({size} bytes)")]
+    /// The backend could not be initialized (FS mkdir, credential load).
+    #[error("failed to initialize {provider} object storage")]
+    Init {
+        provider: &'static str,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    /// An object key is unsafe to map onto the local filesystem (absolute
+    /// or contains `..`). Permanent by design: every retry fails
+    /// deterministically rather than escaping the configured root.
+    #[error("refusing to write unsafe object key {key:?}")]
+    InvalidKey { key: String },
+    /// Uploading/writing an object failed.
+    #[error("failed to put object {location}/{key} ({size} bytes)")]
     PutObject {
-        bucket: String,
+        /// Backend-specific target, e.g. `s3://bucket/prefix`,
+        /// `gs://bucket`, or `file://root`.
+        location: String,
         key: String,
         size: usize,
         #[source]

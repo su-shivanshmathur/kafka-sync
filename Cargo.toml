@@ -13,12 +13,18 @@ bytes = "1"
 chrono = "0.4"
 ctrlc = "3"
 dotenvy = "0.15"
+gcloud-auth = "1"
+gcloud-storage = "1"
 rdkafka = "0.39"
+serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints.rust]
 # The codebase never resorts to `unsafe`; keep it that way at compile time.
