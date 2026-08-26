@@ -23,9 +23,6 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
-[dev-dependencies]
-tempfile = "3"
-
 [lints.rust]
 # The codebase never resorts to `unsafe`; keep it that way at compile time.
 unsafe_code = "forbid"

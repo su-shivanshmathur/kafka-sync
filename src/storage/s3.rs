@@ -41,8 +41,9 @@ impl S3Store {
             .load()
             .await;
         let bucket = bucket.into();
-        // `path` is validated non-blank at config time, so the normalized
-        // prefix is always present.
+        // `path` is validated *and* slash-normalized at config time
+        // (`required_prefix`), so the normalized prefix is always present;
+        // the trim here is an idempotent guard for direct callers.
         let prefix = path.into().trim_matches('/').to_owned();
         let location = format!("s3://{bucket}/{prefix}");
         Self {
@@ -72,8 +73,11 @@ impl ObjectStore for S3Store {
         match sent {
             Ok(_) => Ok(()),
             Err(err) => Err(StorageError::PutObject {
+                // `key` (not `full_key`): `location` already carries the
+                // prefix, so the error composes to
+                // "s3://<bucket>/<prefix>/<key>" exactly once.
                 location: self.location.clone(),
-                key: full_key,
+                key: key.to_owned(),
                 size,
                 source: Box::new(err),
             }),

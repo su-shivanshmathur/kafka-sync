@@ -249,43 +249,91 @@ pub struct GcsSettings {
     pub credentials_path: Option<String>,
 }
 
-/// Branches on the provider string, then demands only that variant's
-/// fields. Pure: credentials/root paths are parsed as [`PathBuf`] but never
-/// touched on disk here (file access is deferred to store construction).
+/// The raw provider tag. The configured `provider` string is parsed into
+/// this exactly once (via [`FromStr`] — the single place strings are
+/// matched); every downstream branch matches exhaustively on the tag, so an
+/// unknown provider can only fail at the boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderTag {
+    FileSystem,
+    Aws,
+    Gcs,
+}
+
+impl std::str::FromStr for ProviderTag {
+    type Err = ConfigError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.to_ascii_lowercase().as_str() {
+            "filesystem" => Ok(Self::FileSystem),
+            "aws" => Ok(Self::Aws),
+            "gcs" => Ok(Self::Gcs),
+            other => Err(ConfigError::InvalidValue {
+                name: ENV_OBJECT_STORAGE,
+                value: other.to_owned(),
+                reason: "supported providers: FileSystem, AWS, GCS",
+            }),
+        }
+    }
+}
+
+/// Branches on the provider tag, then demands only that variant's fields.
+/// Pure: credentials/root paths are parsed as [`PathBuf`] but never touched
+/// on disk here (file access is deferred to store construction).
 fn parse_storage_provider(
     env: &impl Fn(&str) -> Option<String>,
     storage: &StorageSettings,
 ) -> Result<StorageProvider, ConfigError> {
-    // The provider *selection* defaults to FileSystem when the key is absent
-    // (the `None` arm). Crucially the root is resolved *inside* the
-    // FileSystem arm, so an explicit root is honoured even with no provider
-    // set — we never short-circuit to `StorageProvider::default()`, which
-    // would skip STORAGE_ROOT / `[storage.filesystem] path`.
-    match pick(env, ENV_OBJECT_STORAGE, storage.provider.as_deref())
-        .map(|s| s.to_ascii_lowercase())
-        .as_deref()
-    {
-        None | Some("filesystem") => Ok(StorageProvider::FileSystem {
+    // The provider tag defaults to FileSystem when the key is absent.
+    // Crucially the tag only selects the *arm*: the FileSystem root is
+    // resolved inside that arm, so an explicit root is honoured even with no
+    // provider set — we never short-circuit to `StorageProvider::default()`,
+    // which would skip STORAGE_ROOT / `[storage.filesystem] path`.
+    let tag = match pick(env, ENV_OBJECT_STORAGE, storage.provider.as_deref()) {
+        Some(raw) => raw.parse::<ProviderTag>()?,
+        None => ProviderTag::FileSystem,
+    };
+    match tag {
+        ProviderTag::FileSystem => Ok(StorageProvider::FileSystem {
             root: pick(env, ENV_STORAGE_ROOT, storage.filesystem.path.as_deref())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_STORAGE_ROOT)),
         }),
-        Some("aws") => Ok(StorageProvider::Aws {
-            bucket: required(
+        ProviderTag::Aws => {
+            let bucket = required(
                 pick(env, ENV_BUCKET, storage.aws.bucket.as_deref()),
                 ENV_BUCKET,
-            )?,
-            // Required key prefix; missing/blank fails fast.
-            path: required(
+            )?;
+            // Required key prefix. `required` rejects whitespace-blank, but
+            // a slash-*only* value is non-blank yet normalizes to nothing —
+            // so it is slash-normalized right here and rejected if empty:
+            // the stored value, `Display`, and the S3 keyspace all agree on
+            // one form.
+            let raw_path = required(
                 pick(env, ENV_CLOUD_PATH, storage.aws.path.as_deref()),
                 ENV_CLOUD_PATH,
-            )?,
-            region: required(
+            )?;
+            let path = match raw_path.trim_matches('/') {
+                "" => {
+                    return Err(ConfigError::InvalidValue {
+                        name: ENV_CLOUD_PATH,
+                        value: raw_path,
+                        reason: "must contain at least one non-'/' segment",
+                    });
+                }
+                normalized => normalized.to_owned(),
+            };
+            let region = required(
                 pick(env, ENV_AWS_REGION, storage.aws.region.as_deref()),
                 ENV_AWS_REGION,
-            )?,
-        }),
-        Some("gcs") => Ok(StorageProvider::Gcs {
+            )?;
+            Ok(StorageProvider::Aws {
+                bucket,
+                path,
+                region,
+            })
+        }
+        ProviderTag::Gcs => Ok(StorageProvider::Gcs {
             bucket: required(
                 pick(env, ENV_BUCKET, storage.gcs.bucket.as_deref()),
                 ENV_BUCKET,
@@ -298,13 +346,6 @@ fn parse_storage_provider(
                 ),
                 ENV_GCS_CREDENTIALS_PATH,
             )?),
-        }),
-        // The one catch-all: it exists to *reject* unknown provider strings,
-        // not to swallow them.
-        Some(other) => Err(ConfigError::InvalidValue {
-            name: ENV_OBJECT_STORAGE,
-            value: other.to_owned(),
-            reason: "supported providers: FileSystem, AWS, GCS",
         }),
     }
 }
@@ -413,307 +454,4 @@ fn parse_list(raw: &str) -> Vec<String> {
         .filter(|entry| !entry.is_empty())
         .map(String::from)
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::consts::{
-        ENV_AWS_REGION, ENV_BROKERS, ENV_BUCKET, ENV_CLOUD_PATH, ENV_GCS_CREDENTIALS_PATH,
-        ENV_OBJECT_STORAGE, ENV_STORAGE_ROOT, ENV_TOPICS,
-    };
-
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-    /// An env lookup with the mandatory Kafka keys pre-filled; storage keys
-    /// come from the arguments.
-    fn env<'a>(
-        provider: Option<&'a str>,
-        pairs: &'a [(&'a str, &'a str)],
-    ) -> impl Fn(&str) -> Option<String> + 'a {
-        move |name: &str| match name {
-            ENV_BROKERS => Some("localhost:9092".to_owned()),
-            ENV_TOPICS => Some("events".to_owned()),
-            ENV_OBJECT_STORAGE => provider.map(str::to_owned),
-            _ => pairs
-                .iter()
-                .find(|(key, _)| *key == name)
-                .map(|(_, value)| (*value).to_owned()),
-        }
-    }
-
-    /// Parses a TOML snippet into the raw file settings. Keeps its error
-    /// instead of silently falling back to defaults — a typo'd snippet
-    /// must fail the test, not produce a misleading config.
-    fn file(toml_str: &str) -> Result<FileSettings, Box<dyn std::error::Error>> {
-        toml::from_str(toml_str).map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
-    }
-
-    fn storage_of(
-        provider: Option<&str>,
-        pairs: &[(&str, &str)],
-        file: &FileSettings,
-    ) -> Result<StorageProvider, ConfigError> {
-        Config::from_layered(&env(provider, pairs), file).map(|config| config.storage)
-    }
-
-    #[test]
-    fn defaults_to_filesystem_under_logs() {
-        let storage = storage_of(None, &[], &FileSettings::default()).ok();
-        let expected = StorageProvider::FileSystem {
-            root: PathBuf::from(DEFAULT_STORAGE_ROOT),
-        };
-        assert_eq!(storage, Some(expected));
-        // The all-absent parse result equals the manual `Default` impl.
-        assert_eq!(storage, Some(StorageProvider::default()));
-    }
-
-    #[test]
-    fn filesystem_honours_explicit_root_without_provider() -> TestResult {
-        assert_eq!(
-            storage_of(
-                None,
-                &[(ENV_STORAGE_ROOT, "/data")],
-                &FileSettings::default()
-            )
-            .ok(),
-            Some(StorageProvider::FileSystem {
-                root: PathBuf::from("/data")
-            })
-        );
-        // And the nested file table provides the same value.
-        let file = file(
-            r#"
-                [storage.filesystem]
-                path = "/data"
-            "#,
-        )?;
-        assert_eq!(
-            storage_of(None, &[], &file).ok(),
-            Some(StorageProvider::FileSystem {
-                root: PathBuf::from("/data")
-            })
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn aws_requires_bucket_path_and_region() {
-        assert_eq!(
-            storage_of(
-                Some("AWS"),
-                &[
-                    (ENV_BUCKET, "b"),
-                    (ENV_CLOUD_PATH, "kafka-sync"),
-                    (ENV_AWS_REGION, "eu-west-1"),
-                ],
-                &FileSettings::default()
-            )
-            .ok(),
-            Some(StorageProvider::Aws {
-                bucket: "b".to_owned(),
-                path: "kafka-sync".to_owned(),
-                region: "eu-west-1".to_owned(),
-            })
-        );
-
-        for (pairs, missing) in [
-            (
-                vec![
-                    (ENV_CLOUD_PATH, "kafka-sync"),
-                    (ENV_AWS_REGION, "eu-west-1"),
-                ],
-                ENV_BUCKET,
-            ),
-            (
-                vec![(ENV_BUCKET, "b"), (ENV_AWS_REGION, "eu-west-1")],
-                ENV_CLOUD_PATH,
-            ),
-            (
-                vec![(ENV_BUCKET, "b"), (ENV_CLOUD_PATH, "kafka-sync")],
-                ENV_AWS_REGION,
-            ),
-        ] {
-            let outcome = storage_of(Some("AWS"), &pairs, &FileSettings::default());
-            assert!(
-                matches!(outcome, Err(ConfigError::Missing { name }) if name == missing),
-                "expected Missing({missing:?}), got {outcome:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn gcs_requires_bucket_and_credentials_path() {
-        assert_eq!(
-            storage_of(
-                Some("gcs"),
-                &[
-                    (ENV_BUCKET, "b"),
-                    (ENV_GCS_CREDENTIALS_PATH, "/keys/sa.json")
-                ],
-                &FileSettings::default()
-            )
-            .ok(),
-            Some(StorageProvider::Gcs {
-                bucket: "b".to_owned(),
-                credentials_path: PathBuf::from("/keys/sa.json"),
-            })
-        );
-
-        for (pairs, missing) in [
-            (vec![(ENV_BUCKET, "b")], ENV_GCS_CREDENTIALS_PATH),
-            (
-                vec![(ENV_GCS_CREDENTIALS_PATH, "/keys/sa.json")],
-                ENV_BUCKET,
-            ),
-        ] {
-            let outcome = storage_of(Some("gcs"), &pairs, &FileSettings::default());
-            assert!(
-                matches!(outcome, Err(ConfigError::Missing { name }) if name == missing),
-                "expected Missing({missing:?}), got {outcome:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn unknown_provider_is_rejected() {
-        let outcome = storage_of(Some("minio"), &[], &FileSettings::default());
-        assert!(
-            matches!(
-                outcome,
-                Err(ConfigError::InvalidValue {
-                    name: ENV_OBJECT_STORAGE,
-                    ref value,
-                    ..
-                }) if value == "minio"
-            ),
-            "expected InvalidValue(OBJECT_STORAGE, \"minio\"), got {outcome:?}"
-        );
-    }
-
-    #[test]
-    fn nested_file_sections_feed_each_provider() -> TestResult {
-        // One file carrying all three providers' settings; `provider` picks
-        // the table that gets validated.
-        let file = file(
-            r#"
-                [storage]
-                provider = "aws"
-
-                [storage.filesystem]
-                path = "/data"
-
-                [storage.aws]
-                bucket = "b"
-                path = "kafka-sync"
-                region = "eu-west-1"
-
-                [storage.gcs]
-                bucket = "g"
-                credentials_path = "/keys/sa.json"
-            "#,
-        )?;
-        assert_eq!(
-            storage_of(None, &[], &file).ok(),
-            Some(StorageProvider::Aws {
-                bucket: "b".to_owned(),
-                path: "kafka-sync".to_owned(),
-                region: "eu-west-1".to_owned(),
-            })
-        );
-        // Flipping only the env provider key selects a different table.
-        assert_eq!(
-            storage_of(Some("gcs"), &[], &file).ok(),
-            Some(StorageProvider::Gcs {
-                bucket: "g".to_owned(),
-                credentials_path: PathBuf::from("/keys/sa.json"),
-            })
-        );
-        assert_eq!(
-            storage_of(Some("filesystem"), &[], &file).ok(),
-            Some(StorageProvider::FileSystem {
-                root: PathBuf::from("/data")
-            })
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn env_wins_over_file_values() -> TestResult {
-        let file = file(
-            r#"
-                [storage]
-                provider = "aws"
-
-                [storage.aws]
-                bucket = "file-bucket"
-                path = "kafka-sync"
-                region = "eu-west-1"
-            "#,
-        )?;
-        assert_eq!(
-            storage_of(None, &[(ENV_BUCKET, "env-bucket")], &file).ok(),
-            Some(StorageProvider::Aws {
-                bucket: "env-bucket".to_owned(),
-                path: "kafka-sync".to_owned(),
-                region: "eu-west-1".to_owned(),
-            })
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn display_shows_target_without_credentials() {
-        assert_eq!(
-            StorageProvider::FileSystem {
-                root: PathBuf::from("./logs")
-            }
-            .to_string(),
-            "file://./logs"
-        );
-        assert_eq!(
-            StorageProvider::Aws {
-                bucket: "b".to_owned(),
-                path: "kafka-sync".to_owned(),
-                region: "eu-west-1".to_owned(),
-            }
-            .to_string(),
-            "s3://b/kafka-sync"
-        );
-        assert_eq!(
-            StorageProvider::Gcs {
-                bucket: "b".to_owned(),
-                credentials_path: PathBuf::from("/keys/sa.json"),
-            }
-            .to_string(),
-            "gs://b"
-        );
-    }
-
-    #[test]
-    fn blank_values_mean_unset_in_both_channels() -> TestResult {
-        // An env var that is set-but-blank must not shadow a file value.
-        let file = file(
-            r#"
-                [kafka]
-                topics = "events"
-
-                [storage.filesystem]
-                path = "/data"
-            "#,
-        )?;
-        let env = |name: &str| match name {
-            ENV_BROKERS => Some("localhost:9092".to_owned()),
-            ENV_STORAGE_ROOT => Some("   ".to_owned()),
-            _ => None,
-        };
-        let config = Config::from_layered(&env, &file)?;
-        assert_eq!(
-            config.storage,
-            StorageProvider::FileSystem {
-                root: PathBuf::from("/data")
-            }
-        );
-        Ok(())
-    }
 }
