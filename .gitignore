@@ -12,3 +12,6 @@
 .idea/
 .vscode/
 .DS_Store
+
+# Local FileSystem storage backend output
+/logs

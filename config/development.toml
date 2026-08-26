@@ -6,7 +6,7 @@
 # `config/deployments/`.
 
 [kafka]
-brokers = "localhost:9093"
+brokers = "localhost:9092"
 consumer_group = "kafka-sync-dev"
 topics = "events"
 # Window length in seconds.
@@ -15,6 +15,5 @@ sync_duration_secs = 10
 max_window_bytes = 268435456
 
 [storage]
-provider = "AWS"
-bucket = "kafka-sync-dev-bucket"
-region = "eu-west-1"
+# See config/config.example.toml for AWS and GCS examples.
+provider = "FileSystem"

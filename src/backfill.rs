@@ -54,7 +54,7 @@ impl Backfill {
         info!(
             topics = ?self.config.kafka_topics,
             window_secs = self.config.sync_duration.as_secs(),
-            bucket = self.config.cloud_bucket.as_str(),
+            target = %self.config.storage,
             "backfill loop started"
         );
         let mut cycle: u64 = 0;

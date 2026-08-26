@@ -13,9 +13,12 @@
 #   KAFKA_CONSUMER_GROUP     [kafka] consumer_group
 #   SYNC_DURATION            [kafka] sync_duration_secs      (seconds, >= 1)
 #   KAFKA_MAX_WINDOW_BYTES   [kafka] max_window_bytes        (bytes, >= 1)
-#   OBJECT_STORAGE           [storage] provider              (only "AWS" today)
-#   CLOUD_BUCKET             [storage] bucket
-#   AWS_REGION               [storage] region
+#   OBJECT_STORAGE           [storage] provider   ("FileSystem"|"AWS"|"GCS")
+#   STORAGE_ROOT             [storage.filesystem] path
+#   CLOUD_BUCKET             [storage.aws] bucket  or  [storage.gcs] bucket
+#   CLOUD_PATH               [storage.aws] path            (S3 key prefix)
+#   AWS_REGION               [storage.aws] region
+#   GCS_CREDENTIALS_PATH     [storage.gcs] credentials_path
 
 [kafka]
 # Comma-separated host:port bootstrap servers. REQUIRED (no default).
@@ -30,9 +33,27 @@ sync_duration_secs = 10
 max_window_bytes = 268435456
 
 [storage]
-# Object storage provider (only "AWS" today). Default: "AWS".
-provider = "AWS"
-# Target bucket. REQUIRED (no default).
-bucket = "kafka-sync-dev-bucket"
-# Region used to build the SDK client. REQUIRED (no default).
-region = "eu-west-1"
+# Object storage provider: "FileSystem" | "AWS" | "GCS". Default: "FileSystem".
+provider = "FileSystem"
+
+# --- FileSystem (default; no auth) ---
+[storage.filesystem]
+# Local root directory. Optional; default "./logs" (git-ignored).
+# path = "./logs"
+
+# --- AWS S3 ---
+[storage.aws]
+# Target bucket. REQUIRED for AWS.
+# bucket = "kafka-sync-dev-bucket"
+# Required key prefix — objects land under s3://<bucket>/<path>/yyyy/mm/dd/…
+# path = "kafka-sync"
+# Region used to build the SDK client. REQUIRED for AWS.
+# region = "eu-west-1"
+
+# --- Google Cloud Storage ---
+[storage.gcs]
+# Target bucket. REQUIRED for GCS.
+# bucket = "kafka-sync-dev-bucket"
+# Service-account JSON key file. REQUIRED for GCS (keep it out of version
+# control; point at a secret-mounted path).
+# credentials_path = "/path/to/service-account.json"
