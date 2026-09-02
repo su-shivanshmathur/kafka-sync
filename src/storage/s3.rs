@@ -41,9 +41,9 @@ impl S3Store {
             .load()
             .await;
         let bucket = bucket.into();
-        // `path` is validated *and* slash-normalized at config time
-        // (`required_prefix`), so the normalized prefix is always present;
-        // the trim here is an idempotent guard for direct callers.
+        // `path` is validated and slash-normalized at config time (see
+        // `parse_storage_provider`), so the normalized prefix is always
+        // present; the trim here is an idempotent guard for direct callers.
         let prefix = path.into().trim_matches('/').to_owned();
         let location = format!("s3://{bucket}/{prefix}");
         Self {

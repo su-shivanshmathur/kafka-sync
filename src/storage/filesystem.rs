@@ -8,6 +8,7 @@
 //! input), so every key passes through [`safe_join`] before touching disk.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -15,6 +16,11 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::StorageError;
 use crate::storage::ObjectStore;
+
+/// Per-write sequence for temp-file names (`<final>.<pid>.<seq>.tmp`):
+/// concurrent writes to the same final path never share a temp file, so
+/// write+rename stays atomic by construction.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Local-filesystem object store rooted at a configured directory.
 pub struct FileSystemStore {
@@ -41,22 +47,19 @@ impl FileSystemStore {
     }
 }
 
-/// Joins `key` onto `root` without ever escaping it.
-///
-/// `Path::join` with an absolute component *discards the base*
-/// (`root.join("/etc/passwd") == /etc/passwd`), and `..` walks out of the
-/// root — so any key that isn't made of plain `Normal` (or `.`) components
-/// is rejected outright instead of sanitized into something surprising.
+/// Joins `key` onto `root` without ever escaping it: only a non-empty
+/// all-`Normal` key is accepted (`Path::join` with an absolute component
+/// discards the base, and `..` walks out of the root).
 fn safe_join(root: &Path, key: &str) -> Result<PathBuf, StorageError> {
-    let rel = Path::new(key);
-    let traversal = rel
-        .components()
-        .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir));
-    match traversal {
-        true => Err(StorageError::InvalidKey {
+    let valid = !key.is_empty()
+        && Path::new(key)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)));
+    match valid {
+        true => Ok(root.join(key)),
+        false => Err(StorageError::InvalidKey {
             key: key.to_owned(),
         }),
-        false => Ok(root.join(rel)),
     }
 }
 
@@ -86,14 +89,15 @@ impl ObjectStore for FileSystemStore {
                 .map_err(&put_error)?;
         }
 
-        // Temp sibling + atomic rename == S3's all-or-nothing PUT. The
-        // `<final>.<pid>.tmp` name needs no `tempfile` runtime dep: windows
-        // are sequential and each (topic, window) yields one distinct key,
-        // so no two in-flight puts target the same temp path (and
-        // `File::create` truncates, making a stale `.tmp` from a prior
-        // crash a harmless overwrite).
+        // Temp sibling + atomic rename == S3's all-or-nothing PUT; the
+        // per-write name (see `TMP_SEQ`) keeps a stale `.tmp` from ever
+        // racing a new write.
         let mut tmp = final_path.clone().into_os_string();
-        tmp.push(format!(".{}.tmp", std::process::id()));
+        tmp.push(format!(
+            ".{}.{}.tmp",
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         let tmp = PathBuf::from(tmp);
 
         let mut file = tokio::fs::File::create(&tmp).await.map_err(&put_error)?;
