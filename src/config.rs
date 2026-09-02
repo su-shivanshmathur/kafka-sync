@@ -145,29 +145,25 @@ impl Config {
 
         let sync_duration = match layer_u64(env, ENV_SYNC_DURATION, file.kafka.sync_duration_secs)?
         {
-            Some(0) => {
-                return Err(ConfigError::InvalidValue {
-                    name: ENV_SYNC_DURATION,
-                    value: "0".to_owned(),
-                    reason: "duration must be at least 1 second",
-                });
-            }
-            Some(secs) => Duration::from_secs(secs),
-            None => Duration::from_secs(DEFAULT_SYNC_DURATION_SECS),
-        };
+            Some(0) => Err(ConfigError::InvalidValue {
+                name: ENV_SYNC_DURATION,
+                value: "0".to_owned(),
+                reason: "duration must be at least 1 second",
+            }),
+            Some(secs) => Ok(Duration::from_secs(secs)),
+            None => Ok(Duration::from_secs(DEFAULT_SYNC_DURATION_SECS)),
+        }?;
 
         let max_window_bytes =
             match layer_usize(env, ENV_MAX_WINDOW_BYTES, file.kafka.max_window_bytes)? {
-                Some(0) => {
-                    return Err(ConfigError::InvalidValue {
-                        name: ENV_MAX_WINDOW_BYTES,
-                        value: "0".to_owned(),
-                        reason: "value must be at least 1",
-                    });
-                }
-                Some(bytes) => bytes,
-                None => DEFAULT_MAX_WINDOW_BYTES,
-            };
+                Some(0) => Err(ConfigError::InvalidValue {
+                    name: ENV_MAX_WINDOW_BYTES,
+                    value: "0".to_owned(),
+                    reason: "value must be at least 1",
+                }),
+                Some(bytes) => Ok(bytes),
+                None => Ok(DEFAULT_MAX_WINDOW_BYTES),
+            }?;
 
         let storage = parse_storage_provider(env, &file.storage)?;
 
@@ -190,8 +186,10 @@ impl Config {
 /// Every field stays `Option` — "absent" is distinguishable from "present"
 /// until the fail-fast validation layer ([`Config::from_layered`]) runs,
 /// where missing values either fall back to defaults or error out.
+/// `deny_unknown_fields`: an unknown key is a startup error, never a
+/// silently ignored setting.
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FileSettings {
     pub kafka: KafkaSettings,
     pub storage: StorageSettings,
@@ -200,7 +198,7 @@ pub struct FileSettings {
 /// `[kafka]` — comma-separated lists stay `String` here so the file and the
 /// env vars share the exact same splitting semantics.
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct KafkaSettings {
     pub brokers: Option<String>,
     pub topics: Option<String>,
@@ -213,7 +211,7 @@ pub struct KafkaSettings {
 /// backend. A file may carry several providers' settings at once;
 /// `provider` picks which table is validated and used.
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StorageSettings {
     pub provider: Option<String>,
     pub filesystem: FileSystemSettings,
@@ -223,7 +221,7 @@ pub struct StorageSettings {
 
 /// `[storage.filesystem]`
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FileSystemSettings {
     /// Local root for archived objects; falls back to `./logs`.
     pub path: Option<String>,
@@ -231,7 +229,7 @@ pub struct FileSystemSettings {
 
 /// `[storage.aws]`
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AwsSettings {
     pub bucket: Option<String>,
     /// Required key prefix; objects land under `s3://<bucket>/<path>/…`.
@@ -241,7 +239,7 @@ pub struct AwsSettings {
 
 /// `[storage.gcs]`
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct GcsSettings {
     pub bucket: Option<String>,
     /// Service-account JSON key file. The secret stays on disk — only the
@@ -314,15 +312,13 @@ fn parse_storage_provider(
                 ENV_CLOUD_PATH,
             )?;
             let path = match raw_path.trim_matches('/') {
-                "" => {
-                    return Err(ConfigError::InvalidValue {
-                        name: ENV_CLOUD_PATH,
-                        value: raw_path,
-                        reason: "must contain at least one non-'/' segment",
-                    });
-                }
-                normalized => normalized.to_owned(),
-            };
+                "" => Err(ConfigError::InvalidValue {
+                    name: ENV_CLOUD_PATH,
+                    value: raw_path,
+                    reason: "must contain at least one non-'/' segment",
+                }),
+                normalized => Ok(normalized.to_owned()),
+            }?;
             let region = required(
                 pick(env, ENV_AWS_REGION, storage.aws.region.as_deref()),
                 ENV_AWS_REGION,
@@ -447,11 +443,16 @@ fn required_list(value: Option<String>, name: &'static str) -> Result<Vec<String
     }
 }
 
-/// Splits a comma-separated variable into trimmed, non-empty entries.
+/// Splits a comma-separated variable into trimmed, non-empty entries,
+/// first occurrence kept — a repeated topic would otherwise run two
+/// concurrent window tasks over the same object keys.
 fn parse_list(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .map(String::from)
-        .collect()
+    let mut entries: Vec<String> = Vec::new();
+    for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        let owned = entry.to_owned();
+        if !entries.contains(&owned) {
+            entries.push(owned);
+        }
+    }
+    entries
 }
